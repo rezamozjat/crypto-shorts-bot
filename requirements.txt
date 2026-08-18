@@ -2,3 +2,4 @@ groq
 feedparser
 edge-tts
 requests
+moviepy
