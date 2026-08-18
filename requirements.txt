@@ -1,3 +1,4 @@
 groq
-edge-tts
 feedparser
+edge-tts
+requests
