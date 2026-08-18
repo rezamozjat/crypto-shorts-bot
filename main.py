@@ -4,7 +4,7 @@ import feedparser
 import edge_tts
 import requests
 from groq import Groq
-from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
@@ -14,7 +14,6 @@ client = Groq(api_key=GROQ_API_KEY)
 RSS_URL = "https://cointelegraph.com/rss"
 VOICE = "fa-IR-FaridNeural"
 OUTPUT_AUDIO = "voice.mp3"
-OUTPUT_BG_VIDEO = "bg_video.mp4"
 FINAL_OUTPUT = "output.mp4"
 
 def get_script():
@@ -54,45 +53,56 @@ async def make_audio(text):
     await communicate.save(OUTPUT_AUDIO)
     print(f"✅ فایل صوتی ساخته شد: {OUTPUT_AUDIO}")
 
-def download_background_video(query="cryptocurrency"):
-    print(f"\n🎬 در حال دریافت ویدیو پس‌زمینه...")
+def fetch_and_build_video(target_duration):
+    print(f"\n🎬 در حال دریافت ویدیوها تا رسیدن به زمان: {target_duration:.1f} ثانیه...")
     headers = {"Authorization": PEXELS_API_KEY}
-    url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=1"
+    url = "https://api.pexels.com/videos/search?query=cryptocurrency&orientation=portrait&per_page=10"
     
     response = requests.get(url, headers=headers)
+    clips = []
+    current_duration = 0.0
+
     if response.status_code == 200:
-        data = response.json()
-        if data['videos']:
-            video_files = data['videos'][0]['video_files']
-            download_url = video_files[0]['link']
+        videos = response.json().get('videos', [])
+        for idx, vid in enumerate(videos):
+            if current_duration >= target_duration:
+                break
             
-            video_data = requests.get(download_url).content
-            with open(OUTPUT_BG_VIDEO, "wb") as f:
+            video_url = vid['video_files'][0]['link']
+            file_name = f"temp_bg_{idx}.mp4"
+            
+            # دانلود ویدیو
+            video_data = requests.get(video_url).content
+            with open(file_name, "wb") as f:
                 f.write(video_data)
-            print(f"✅ ویدیوی پس‌زمینه ذخیره شد: {OUTPUT_BG_VIDEO}")
-        else:
-            print("❌ ویدیویی یافت نشد.")
+            
+            clip = VideoFileClip(file_name)
+            clips.append(clip)
+            current_duration += clip.duration
+
+        # چسباندن ویدیوها به هم
+        full_bg = concatenate_videoclips(clips, method="compose")
+        # قیچی کردن دقیقاً به اندازه زمان صدا
+        final_bg = full_bg.subclip(0, target_duration)
+        return final_bg
     else:
-        print(f"❌ خطا در اتصال به Pexels: {response.status_code}")
+        print("❌ خطا در دانلود ویدیو از Pexels")
+        return None
 
 def render_final_video():
     print("\n🎞️ در حال ترکیب صدا و ویدیو (رندر نهایی)...")
     audio_clip = AudioFileClip(OUTPUT_AUDIO)
-    video_clip = VideoFileClip(OUTPUT_BG_VIDEO)
-
-    # اگر ویدیو کوتاه‌تر از صدا بود، اونو تکرار می‌کنه
-    if video_clip.duration < audio_clip.duration:
-        video_clip = video_clip.loop(duration=audio_clip.duration)
-    else:
-        video_clip = video_clip.subclip(0, audio_clip.duration)
-
-    final_clip = video_clip.set_audio(audio_clip)
-    final_clip.write_videofile(FINAL_OUTPUT, codec="libx264", audio_codec="aac", fps=24)
-    print(f"🎉 ویدیوی نهایی ساخته شد: {FINAL_OUTPUT}")
+    
+    # ساخت پس‌زمینه دقیقا به اندازه طول صدا
+    bg_video = fetch_and_build_video(audio_clip.duration)
+    
+    if bg_video:
+        final_clip = bg_video.set_audio(audio_clip)
+        final_clip.write_videofile(FINAL_OUTPUT, codec="libx264", audio_codec="aac", fps=24)
+        print(f"🎉 ویدیوی نهایی ساخته شد: {FINAL_OUTPUT}")
 
 if __name__ == "__main__":
     script_text = get_script()
     if script_text:
         asyncio.run(make_audio(script_text))
-        download_background_video("cryptocurrency")
         render_final_video()
