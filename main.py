@@ -3,6 +3,7 @@ import asyncio
 import feedparser
 import edge_tts
 import requests
+import time
 from groq import Groq
 from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
 
@@ -67,30 +68,49 @@ async def make_audio(text):
     print(f"✅ فایل صوتی ساخته شد: {OUTPUT_AUDIO}")
 
 def fetch_and_build_video(target_duration):
-    """دانلود چندین ویدیوی کوتاه از Pexels و چسباندن آن‌ها به اندازه طول صدا"""
+    """دانلود چندین ویدیوی کوتاه از Pexels با سیستم تلاش مجدد (Retry)"""
     print(f"\n🎬 در حال دریافت ویدیوها تا رسیدن به زمان: {target_duration:.1f} ثانیه...")
     headers = {"Authorization": PEXELS_API_KEY}
     url = "https://api.pexels.com/videos/search?query=blockchain&orientation=portrait&per_page=30"
     
-    response = requests.get(url, headers=headers)
+    # سیستم تلاش مجدد برای مقابله با ارورهای سرور مثل 522
+    max_retries = 3
+    response = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            if response.status_code == 200:
+                break
+            else:
+                print(f"⚠️ تلاش {attempt + 1}: ارور {response.status_code} از Pexels. ۵ ثانیه صبر می‌کنیم...")
+                time.sleep(5)
+        except Exception as e:
+            print(f"⚠️ تلاش {attempt + 1}: مشکل در ارتباط شبکه. ۵ ثانیه صبر می‌کنیم...")
+            time.sleep(5)
+
+    if not response or response.status_code != 200:
+        print("❌ ارتباط با Pexels بعد از ۳ بار تلاش قطع شد.")
+        return None, [], []
+
     clips = []
     temp_files = []
     current_duration = 0.0
+    videos = response.json().get('videos', [])
+    
+    if not videos:
+        print("❌ هیچ ویدیویی یافت نشد.")
+        return None, [], []
 
-    if response.status_code == 200:
-        videos = response.json().get('videos', [])
-        if not videos:
-            print("❌ هیچ ویدیویی یافت نشد.")
-            return None, [], []
-
-        idx = 0
-        # دانلود ویدیوها تا زمانی که مجموع زمان آن‌ها از زمان صدا بیشتر شود
-        while current_duration < target_duration:
-            vid = videos[idx % len(videos)]
-            video_url = vid['video_files'][0]['link']
-            file_name = f"temp_bg_{len(temp_files)}.mp4"
-            
-            video_data = requests.get(video_url).content
+    idx = 0
+    # دانلود ویدیوها تا پر شدن زمان صدا
+    while current_duration < target_duration:
+        vid = videos[idx % len(videos)]
+        video_url = vid['video_files'][0]['link']
+        file_name = f"temp_bg_{len(temp_files)}.mp4"
+        
+        try:
+            # دانلود فایل ویدیو با مهلت ۲۰ ثانیه
+            video_data = requests.get(video_url, timeout=20).content
             with open(file_name, "wb") as f:
                 f.write(video_data)
             
@@ -98,16 +118,19 @@ def fetch_and_build_video(target_duration):
             clip = VideoFileClip(file_name)
             clips.append(clip)
             current_duration += clip.duration
-            idx += 1
+        except Exception as e:
+            print(f"⚠️ مشکل در دانلود یک ویدیو، رد می‌شویم: {e}")
+            
+        idx += 1
 
-        # چسباندن تمام کلیپ‌های دانلود شده به هم
-        full_bg = concatenate_videoclips(clips, method="compose")
-        # قیچی کردن دقیقاً به اندازه طول فایل صوتی
-        final_bg = full_bg.subclip(0, target_duration)
-        return final_bg, clips, temp_files
-    else:
-        print(f"❌ خطا در دانلود ویدیو از Pexels (کد خطا: {response.status_code})")
+    if not clips:
         return None, [], []
+
+    # چسباندن تمام کلیپ‌های دانلود شده به هم
+    full_bg = concatenate_videoclips(clips, method="compose")
+    # قیچی کردن دقیقاً به اندازه طول فایل صوتی
+    final_bg = full_bg.subclip(0, target_duration)
+    return final_bg, clips, temp_files
 
 def render_final_video():
     """ترکیب ویدیوی پس‌زمینه و فایل صوتی گوینده"""
